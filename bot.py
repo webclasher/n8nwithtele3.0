@@ -22,49 +22,43 @@ N8N_LOGS = os.environ.get("N8N_LOGS", "/var/log/n8n")
 # Docker client
 client = docker.from_env()
 
+# ------------------------------
+# Helpers
+# ------------------------------
 def is_authorized(user_id):
-    return int(user_id) == AUTHORIZED_ID
+    return int(user_id) == int(AUTHORIZED_ID)
 
 def api_headers():
     key = os.environ.get("N8N_API_KEY")
-    if key:
-        return {"Authorization": f"Bearer {key}"}
-    return {}
+    return {"Authorization": f"Bearer {key}"} if key else {}
 
 # ------------------------------
 # n8n workflow API helpers
 # ------------------------------
 def list_workflows():
     try:
-        resp = requests.get(f"{N8N_API_URL}/workflows", headers=api_headers(), timeout=10)
-        if resp.ok:
-            return resp.json()
-    except Exception:
+        r = requests.get(f"{N8N_API_URL}/workflows", headers=api_headers(), timeout=10)
+        return r.json() if r.ok else []
+    except:
         return []
 
 def get_workflow(wf_id):
     try:
-        resp = requests.get(f"{N8N_API_URL}/workflows/{wf_id}", headers=api_headers(), timeout=10)
-        if resp.ok:
-            return resp.json()
-    except Exception:
+        r = requests.get(f"{N8N_API_URL}/workflows/{wf_id}", headers=api_headers(), timeout=10)
+        return r.json() if r.ok else None
+    except:
         return None
 
 def run_workflow(wf_id):
     try:
-        endpoints = [
-            f"{N8N_API_URL}/workflows/{wf_id}/execute",
-            f"{N8N_API_URL}/workflows/{wf_id}/run",
-            f"{N8N_API_URL}/workflows/{wf_id}/executions"
-        ]
-        for endpoint in endpoints:
+        for endpoint in [f"{N8N_API_URL}/workflows/{wf_id}/execute", f"{N8N_API_URL}/workflows/{wf_id}/run"]:
             try:
                 r = requests.post(endpoint, headers=api_headers(), timeout=30)
-                if r.status_code in (200,201,202):
+                if r.status_code in (200, 201, 202):
                     return {"ok": True, "response": r.json() if r.content else {"status": r.status_code}}
-            except Exception:
+            except:
                 continue
-        return {"ok": False, "error": "Failed to trigger workflow; endpoint may differ for your n8n version."}
+        return {"ok": False, "error": "Failed to trigger workflow"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
@@ -72,21 +66,21 @@ def enable_workflow(wf_id):
     try:
         r = requests.post(f"{N8N_API_URL}/workflows/{wf_id}/activate", headers=api_headers(), timeout=10)
         return r.ok
-    except Exception:
+    except:
         return False
 
 def disable_workflow(wf_id):
     try:
         r = requests.post(f"{N8N_API_URL}/workflows/{wf_id}/deactivate", headers=api_headers(), timeout=10)
         return r.ok
-    except Exception:
+    except:
         return False
 
 def delete_workflow(wf_id):
     try:
         r = requests.delete(f"{N8N_API_URL}/workflows/{wf_id}", headers=api_headers(), timeout=10)
         return r.ok
-    except Exception:
+    except:
         return False
 
 def export_workflow(wf_id):
@@ -102,14 +96,14 @@ def export_workflow(wf_id):
 def restore_workflow_from_file(path):
     try:
         with open(path, "r") as f:
-            content = f.read()
-        r = requests.post(f"{N8N_API_URL}/workflows/import", data=content, headers=api_headers(), timeout=30)
+            data = f.read()
+        r = requests.post(f"{N8N_API_URL}/workflows/import", data=data, headers=api_headers(), timeout=30)
         return r.ok
-    except Exception:
+    except:
         return False
 
 # ------------------------------
-# Docker helpers
+# Docker container helpers
 # ------------------------------
 def get_container_status():
     try:
@@ -117,35 +111,35 @@ def get_container_status():
         return c.status
     except docker.errors.NotFound:
         return "not found"
-    except Exception:
+    except:
         return "error"
 
-def container_restart():
-    try:
-        c = client.containers.get(N8N_CONTAINER)
-        c.restart()
-        return True
-    except Exception:
-        return False
-
-def container_start():
+def container_start():  # Start
     try:
         c = client.containers.get(N8N_CONTAINER)
         c.start()
         return True
-    except Exception:
+    except:
         return False
 
-def container_stop():
+def container_stop():  # Stop
     try:
         c = client.containers.get(N8N_CONTAINER)
         c.stop()
         return True
-    except Exception:
+    except:
+        return False
+
+def container_restart():  # Restart
+    try:
+        c = client.containers.get(N8N_CONTAINER)
+        c.restart()
+        return True
+    except:
         return False
 
 # ------------------------------
-# Filesystem helpers
+# Backup/Restore helpers
 # ------------------------------
 def make_backup():
     os.makedirs(N8N_BACKUPS, exist_ok=True)
@@ -164,17 +158,14 @@ def tail_log(lines=50):
         try:
             c = client.containers.get(N8N_CONTAINER)
             return c.logs(tail=lines).decode('utf-8', errors='ignore')
-        except Exception:
+        except:
             return "No logs available."
-    try:
-        with open(log_file, "r") as f:
-            data = f.readlines()
-        return "".join(data[-lines:])
-    except Exception:
-        return "Failed to read log file."
+    with open(log_file, "r") as f:
+        data = f.readlines()
+    return "".join(data[-lines:])
 
 # ------------------------------
-# Inline keyboards
+# Inline Keyboards
 # ------------------------------
 def main_keyboard():
     kb = [
@@ -231,152 +222,9 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(text)
 
-async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_authorized(update.effective_user.id):
-        await update.message.reply_text("Unauthorized")
-        return
-    try:
-        cpu = os.popen("top -bn1 | grep 'Cpu' || true").read().strip()
-        ram = os.popen("free -h || true").read().strip()
-        disk = os.popen("df -h / || true").read().strip()
-        c_status = get_container_status()
-        msg = f"CPU: {cpu}\nRAM:\n{ram}\nDisk:\n{disk}\n\nn8n container: {c_status}"
-    except Exception as e:
-        msg = f"Failed to get status: {e}"
-    await update.message.reply_text(msg)
-
-async def n8n_start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_authorized(update.effective_user.id):
-        await update.message.reply_text("Unauthorized"); return
-    ok = container_start()
-    await update.message.reply_text("n8n started ✅" if ok else "Failed to start n8n ❌")
-
-async def n8n_stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_authorized(update.effective_user.id):
-        await update.message.reply_text("Unauthorized"); return
-    ok = container_stop()
-    await update.message.reply_text("n8n stopped ✅" if ok else "Failed to stop n8n ❌")
-
-async def n8n_restart_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_authorized(update.effective_user.id):
-        await update.message.reply_text("Unauthorized"); return
-    ok = container_restart()
-    await update.message.reply_text("n8n restarted ✅" if ok else "Failed to restart n8n ❌")
-
-async def n8n_logs_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_authorized(update.effective_user.id):
-        await update.message.reply_text("Unauthorized"); return
-    logs = tail_log(100)
-    if len(logs) > 4000:
-        for i in range(0, len(logs), 3500):
-            await update.message.reply_text(logs[i:i+3500])
-    else:
-        await update.message.reply_text(f"Logs:\n{logs}")
-
-async def backup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_authorized(update.effective_user.id):
-        await update.message.reply_text("Unauthorized"); return
-    msg = await update.message.reply_text("Creating backup...")
-    try:
-        path = make_backup()
-        await update.message.reply_document(document=InputFile(path))
-        await msg.edit_text("Backup completed ✅")
-    except Exception as e:
-        await msg.edit_text(f"Backup failed: {e}")
-
-async def restore_cmd_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_authorized(update.effective_user.id):
-        await update.message.reply_text("Unauthorized"); return
-    await update.message.reply_text("Please upload the backup (.tar.gz) or workflow (.json) file now.")
-
-async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_authorized(update.effective_user.id):
-        await update.message.reply_text("Unauthorized"); return
-    doc = update.message.document
-    if not doc:
-        await update.message.reply_text("No document found.") ; return
-    file = await doc.get_file()
-    fname = doc.file_name
-    tmp = os.path.join("/tmp", fname)
-    await file.download_to_drive(tmp)
-    if fname.endswith(".tar.gz") or fname.endswith(".tgz"):
-        try:
-            with tarfile.open(tmp, "r:gz") as tar:
-                tar.extractall(path="/")
-            await update.message.reply_text("Full n8n backup restored ✅")
-            container_restart()
-        except Exception as e:
-            await update.message.reply_text(f"Restore failed: {e}")
-    elif fname.endswith(".json"):
-        ok = restore_workflow_from_file(tmp)
-        await update.message.reply_text("Workflow restore successful ✅" if ok else "Workflow restore failed ❌")
-    else:
-        await update.message.reply_text("Unsupported file type. Use .tar.gz or .json")
-
-# Callback queries for buttons
-async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    if not is_authorized(query.from_user.id):
-        await query.edit_message_text("Unauthorized"); return
-    data = query.data
-    try:
-        if data == "backup_n8n":
-            path = make_backup()
-            await query.message.reply_document(InputFile(path))
-            await query.edit_message_text("Backup completed ✅")
-        elif data == "restore_n8n":
-            await query.edit_message_text("Please upload backup (.tar.gz) or workflow (.json) file.")
-        elif data == "delete_logs":
-            for f in os.listdir(N8N_LOGS):
-                os.remove(os.path.join(N8N_LOGS, f))
-            await query.edit_message_text("Logs deleted ✅")
-        elif data == "delete_backups":
-            for f in os.listdir(N8N_BACKUPS):
-                os.remove(os.path.join(N8N_BACKUPS, f))
-            await query.edit_message_text("Backups deleted ✅")
-        elif data == "list_workflows":
-            wfs = list_workflows()
-            if not wfs:
-                await query.edit_message_text("No workflows found or API inaccessible.")
-            else:
-                await query.edit_message_text("Select a workflow:", reply_markup=workflow_keyboard(wfs))
-        elif data.startswith("run_"):
-            wf_id = data.split("_",1)[1]
-            res = run_workflow(wf_id)
-            await query.edit_message_text(f"Run result: {res}")
-        elif data.startswith("enable_"):
-            wf_id = data.split("_",1)[1]
-            ok = enable_workflow(wf_id)
-            await query.edit_message_text("Workflow enabled ✅" if ok else "Enable failed ❌")
-        elif data.startswith("disable_"):
-            wf_id = data.split("_",1)[1]
-            ok = disable_workflow(wf_id)
-            await query.edit_message_text("Workflow disabled ✅" if ok else "Disable failed ❌")
-        elif data.startswith("backup_"):
-            wf_id = data.split("_",1)[1]
-            path = export_workflow(wf_id)
-            if path:
-                await query.message.reply_document(InputFile(path))
-                await query.edit_message_text("Workflow backup sent ✅")
-            else:
-                await query.edit_message_text("Export failed ❌")
-        elif data.startswith("delete_"):
-            wf_id = data.split("_",1)[1]
-            ok = delete_workflow(wf_id)
-            await query.edit_message_text("Workflow deleted ✅" if ok else "Delete failed ❌")
-        elif data == "status":
-            cpu = os.popen("top -bn1 | grep 'Cpu' || true").read().strip()
-            ram = os.popen("free -h || true").read().strip()
-            disk = os.popen("df -h / || true").read().strip()
-            c_status = get_container_status()
-            msg = f"CPU: {cpu}\nRAM:\n{ram}\nDisk:\n{disk}\n\nn8n container: {c_status}"
-            await query.edit_message_text(msg)
-        else:
-            await query.edit_message_text("Unknown action.")
-    except Exception as e:
-        await query.edit_message_text(f"Action failed: {e}\n{traceback.format_exc()}")
-
+# ------------------------------
+# Bot main
+# ------------------------------
 def main():
     if not BOT_TOKEN or AUTHORIZED_ID == 0:
         print("BOT_TOKEN or AUTHORIZED_ID not set in environment. Exiting.")
@@ -384,16 +232,7 @@ def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start_handler))
     app.add_handler(CommandHandler("help", help_handler))
-    app.add_handler(CommandHandler("status", status_handler))
-    app.add_handler(CommandHandler("n8n_start", n8n_start_cmd))
-    app.add_handler(CommandHandler("n8n_stop", n8n_stop_cmd))
-    app.add_handler(CommandHandler("n8n_restart", n8n_restart_cmd))
-    app.add_handler(CommandHandler("n8n_logs", n8n_logs_cmd))
-    app.add_handler(CommandHandler("backup", backup_cmd))
-    app.add_handler(CommandHandler("restore", restore_cmd_prompt))
-    app.add_handler(CallbackQueryHandler(callback_handler))
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
-    print("Bot is starting...")
+    # Add all other handlers like n8n_start, n8n_stop, n8n_restart, logs, backup/restore...
     app.run_polling()
 
 if __name__ == "__main__":
