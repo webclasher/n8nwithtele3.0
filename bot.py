@@ -3,7 +3,6 @@ import os
 import docker
 import requests
 import tarfile
-import shutil
 import traceback
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
@@ -20,13 +19,11 @@ N8N_DATA = os.environ.get("N8N_DATA", "/root/n8n_data")
 N8N_BACKUPS = os.environ.get("N8N_BACKUPS", "/root/n8n_backups")
 N8N_LOGS = os.environ.get("N8N_LOGS", "/var/log/n8n")
 
-# ------------------------------
 # Docker client
-# ------------------------------
 client = docker.from_env()
 
 def is_authorized(user_id):
-    return int(user_id) == int(AUTHORIZED_ID)
+    return int(user_id) == AUTHORIZED_ID
 
 def api_headers():
     key = os.environ.get("N8N_API_KEY")
@@ -35,7 +32,7 @@ def api_headers():
     return {}
 
 # ------------------------------
-# n8n workflow helpers
+# n8n workflow API helpers
 # ------------------------------
 def list_workflows():
     try:
@@ -55,14 +52,19 @@ def get_workflow(wf_id):
 
 def run_workflow(wf_id):
     try:
-        for endpoint in [f"{N8N_API_URL}/workflows/{wf_id}/execute", f"{N8N_API_URL}/workflows/{wf_id}/run", f"{N8N_API_URL}/workflows/{wf_id}/executions"]:
+        endpoints = [
+            f"{N8N_API_URL}/workflows/{wf_id}/execute",
+            f"{N8N_API_URL}/workflows/{wf_id}/run",
+            f"{N8N_API_URL}/workflows/{wf_id}/executions"
+        ]
+        for endpoint in endpoints:
             try:
                 r = requests.post(endpoint, headers=api_headers(), timeout=30)
                 if r.status_code in (200,201,202):
                     return {"ok": True, "response": r.json() if r.content else {"status": r.status_code}}
             except Exception:
                 continue
-        return {"ok": False, "error": "Failed to trigger workflow."}
+        return {"ok": False, "error": "Failed to trigger workflow; endpoint may differ for your n8n version."}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
@@ -107,7 +109,7 @@ def restore_workflow_from_file(path):
         return False
 
 # ------------------------------
-# Docker container helpers
+# Docker helpers
 # ------------------------------
 def get_container_status():
     try:
@@ -203,7 +205,8 @@ def workflow_keyboard(workflows):
 # Handlers
 # ------------------------------
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_authorized(update.effective_user.id):
+    user = update.effective_user
+    if not is_authorized(user.id):
         await update.message.reply_text("Unauthorized")
         return
     await update.message.reply_text("n8n Manager Bot — Main Menu", reply_markup=main_keyboard())
@@ -232,26 +235,37 @@ async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update.effective_user.id):
         await update.message.reply_text("Unauthorized")
         return
-    cpu = os.popen("top -bn1 | grep 'Cpu' || true").read().strip()
-    ram = os.popen("free -h || true").read().strip()
-    disk = os.popen("df -h / || true").read().strip()
-    c_status = get_container_status()
-    msg = f"CPU: {cpu}\nRAM:\n{ram}\nDisk:\n{disk}\nn8n container: {c_status}"
+    try:
+        cpu = os.popen("top -bn1 | grep 'Cpu' || true").read().strip()
+        ram = os.popen("free -h || true").read().strip()
+        disk = os.popen("df -h / || true").read().strip()
+        c_status = get_container_status()
+        msg = f"CPU: {cpu}\nRAM:\n{ram}\nDisk:\n{disk}\n\nn8n container: {c_status}"
+    except Exception as e:
+        msg = f"Failed to get status: {e}"
     await update.message.reply_text(msg)
 
 async def n8n_start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_authorized(update.effective_user.id):
+        await update.message.reply_text("Unauthorized"); return
     ok = container_start()
     await update.message.reply_text("n8n started ✅" if ok else "Failed to start n8n ❌")
 
 async def n8n_stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_authorized(update.effective_user.id):
+        await update.message.reply_text("Unauthorized"); return
     ok = container_stop()
     await update.message.reply_text("n8n stopped ✅" if ok else "Failed to stop n8n ❌")
 
 async def n8n_restart_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_authorized(update.effective_user.id):
+        await update.message.reply_text("Unauthorized"); return
     ok = container_restart()
     await update.message.reply_text("n8n restarted ✅" if ok else "Failed to restart n8n ❌")
 
 async def n8n_logs_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_authorized(update.effective_user.id):
+        await update.message.reply_text("Unauthorized"); return
     logs = tail_log(100)
     if len(logs) > 4000:
         for i in range(0, len(logs), 3500):
@@ -260,6 +274,8 @@ async def n8n_logs_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Logs:\n{logs}")
 
 async def backup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_authorized(update.effective_user.id):
+        await update.message.reply_text("Unauthorized"); return
     msg = await update.message.reply_text("Creating backup...")
     try:
         path = make_backup()
@@ -269,12 +285,16 @@ async def backup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"Backup failed: {e}")
 
 async def restore_cmd_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_authorized(update.effective_user.id):
+        await update.message.reply_text("Unauthorized"); return
     await update.message.reply_text("Please upload the backup (.tar.gz) or workflow (.json) file now.")
 
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_authorized(update.effective_user.id):
+        await update.message.reply_text("Unauthorized"); return
     doc = update.message.document
     if not doc:
-        await update.message.reply_text("No document found."); return
+        await update.message.reply_text("No document found.") ; return
     file = await doc.get_file()
     fname = doc.file_name
     tmp = os.path.join("/tmp", fname)
@@ -293,31 +313,27 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("Unsupported file type. Use .tar.gz or .json")
 
-# ------------------------------
-# Inline buttons callback
-# ------------------------------
+# Callback queries for buttons
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    if not is_authorized(query.from_user.id):
+        await query.edit_message_text("Unauthorized"); return
     data = query.data
     try:
         if data == "backup_n8n":
             path = make_backup()
-            await query.message.reply_document(document=InputFile(path))
+            await query.message.reply_document(InputFile(path))
             await query.edit_message_text("Backup completed ✅")
         elif data == "restore_n8n":
             await query.edit_message_text("Please upload backup (.tar.gz) or workflow (.json) file.")
         elif data == "delete_logs":
-            if os.path.exists(N8N_LOGS):
-                for f in os.listdir(N8N_LOGS):
-                    p = os.path.join(N8N_LOGS, f)
-                    if os.path.isfile(p): os.remove(p)
+            for f in os.listdir(N8N_LOGS):
+                os.remove(os.path.join(N8N_LOGS, f))
             await query.edit_message_text("Logs deleted ✅")
         elif data == "delete_backups":
-            if os.path.exists(N8N_BACKUPS):
-                for f in os.listdir(N8N_BACKUPS):
-                    p = os.path.join(N8N_BACKUPS, f)
-                    if os.path.isfile(p): os.remove(p)
+            for f in os.listdir(N8N_BACKUPS):
+                os.remove(os.path.join(N8N_BACKUPS, f))
             await query.edit_message_text("Backups deleted ✅")
         elif data == "list_workflows":
             wfs = list_workflows()
@@ -341,7 +357,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             wf_id = data.split("_",1)[1]
             path = export_workflow(wf_id)
             if path:
-                await query.message.reply_document(document=InputFile(path))
+                await query.message.reply_document(InputFile(path))
                 await query.edit_message_text("Workflow backup sent ✅")
             else:
                 await query.edit_message_text("Export failed ❌")
@@ -354,23 +370,18 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ram = os.popen("free -h || true").read().strip()
             disk = os.popen("df -h / || true").read().strip()
             c_status = get_container_status()
-            msg = f"CPU: {cpu}\nRAM:\n{ram}\nDisk:\n{disk}\nn8n container: {c_status}"
+            msg = f"CPU: {cpu}\nRAM:\n{ram}\nDisk:\n{disk}\n\nn8n container: {c_status}"
             await query.edit_message_text(msg)
         else:
             await query.edit_message_text("Unknown action.")
     except Exception as e:
         await query.edit_message_text(f"Action failed: {e}\n{traceback.format_exc()}")
 
-# ------------------------------
-# Main
-# ------------------------------
 def main():
     if not BOT_TOKEN or AUTHORIZED_ID == 0:
         print("BOT_TOKEN or AUTHORIZED_ID not set in environment. Exiting.")
         return
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    # Command handlers
     app.add_handler(CommandHandler("start", start_handler))
     app.add_handler(CommandHandler("help", help_handler))
     app.add_handler(CommandHandler("status", status_handler))
@@ -380,16 +391,10 @@ def main():
     app.add_handler(CommandHandler("n8n_logs", n8n_logs_cmd))
     app.add_handler(CommandHandler("backup", backup_cmd))
     app.add_handler(CommandHandler("restore", restore_cmd_prompt))
-    app.add_handler(CommandHandler("list_workflows", lambda u,c: u.message.reply_text('Use /start and the List Workflows button.')))
-
-    # Callback queries (inline buttons)
     app.add_handler(CallbackQueryHandler(callback_handler))
-
-    # File handler
     app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
-
     print("Bot is starting...")
     app.run_polling()
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
