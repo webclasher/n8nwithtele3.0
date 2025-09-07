@@ -126,6 +126,7 @@ AUTHORIZED_USER_ID=${AUTHORIZED_USER_ID}
 N8N_API_URL=http://localhost:${N8N_PORT}
 N8N_DATA=${N8N_DATA}
 N8N_BACKUPS=${N8N_BACKUPS}
+N8N_LOGS=${N8N_LOGS}
 EOL
 
 # ===============================
